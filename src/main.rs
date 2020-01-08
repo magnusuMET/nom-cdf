@@ -2,16 +2,16 @@ use nom::branch::*;
 use nom::bytes::complete::*;
 use nom::combinator::*;
 use nom::multi::*;
+use nom::number::complete::*;
 use nom::sequence::*;
 use nom::IResult;
-use nom::number::complete::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let contents: &[u8] = include_bytes!("../coads_climatology.nc");
 
     parser(contents)?;
 
-    #[derive(Copy, Clone, Debug)]
+    #[derive(Copy, Clone, Debug, PartialEq)]
     enum Version {
         CDF1,
         CDF2,
@@ -20,10 +20,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     fn magic(input: &[u8]) -> IResult<&[u8], Version> {
         fn version(input: &[u8]) -> IResult<&[u8], Version> {
-            alt((map(tag(&[0x01]), |_| Version::CDF1),
+            alt((
+                map(tag(&[0x01]), |_| Version::CDF1),
                 map(tag(&[0x02]), |_| Version::CDF2),
                 map(tag(&[0x05]), |_| Version::CDF5),
-                ))(input)
+            ))(input)
         }
 
         preceded(tag("CDF"), version)(input)
@@ -45,55 +46,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         name: String,
         len: u32,
     }
-    fn absent(input: &[u8]) -> IResult<&[u8], ()> {
+    fn absent(input: &[u8], version: Version) -> IResult<&[u8], ()> {
         fn zero(input: &[u8]) -> IResult<&[u8], ()> {
             map(tag(&[0, 0, 0, 0]), |_| ())(input)
         }
         fn zero64(input: &[u8]) -> IResult<&[u8], ()> {
             map(tag(&[0, 0, 0, 0, 0, 0, 0, 0]), |_| ())(input)
         }
-        // if version == Version::CDF5 {
-        //     map(pair(zero, zero64), |_| ())(input)
-        // } else {
-        map(pair(zero, zero), |_| ())(input)
-        // }
+        if version == Version::CDF5 {
+            map(pair(zero, zero64), |_| ())(input)
+        } else {
+            map(pair(zero, zero), |_| ())(input)
+        }
     }
-    fn name<'a>(input: &'a [u8], orig: &'a [u8]) -> IResult<&'a [u8], String> {
+    fn name<'a>(input: &'a [u8]) -> IResult<&'a [u8], String> {
         let (i, num) = non_neg(input)?;
         let (i, x) = map(take(num as usize), |s: &[u8]| {
             String::from(std::str::from_utf8(s).unwrap())
         })(i)?;
-        let (i, _) = padding(i, orig)?;
+        let (i, _) = padding(i, input)?;
         Ok((i, x))
     }
-    fn dimlist<'a>(input: &'a [u8], orig: &'a [u8]) -> IResult<&'a [u8], Option<Vec<Dimension>>> {
+    fn dimlist<'a>(input: &'a [u8], version: Version) -> IResult<&'a [u8], Option<Vec<Dimension>>> {
         fn nc_dimension(input: &[u8]) -> IResult<&[u8], ()> {
             map(tag(&[0, 0, 0, 0x0a]), |_| ())(input)
         }
-        fn dim<'a>(input: &'a [u8], orig: &'a [u8]) -> IResult<&'a [u8], Dimension> {
-            let (i, name) = name(input, orig)?;
+        fn dim<'a>(input: &'a [u8]) -> IResult<&'a [u8], Dimension> {
+            let (i, name) = name(input)?;
             let (i, len) = non_neg(i)?;
 
             Ok((i, Dimension { name, len }))
         }
 
-        let (i, num_dims) = alt((
-            map(absent, |_| None),
-            map(preceded(nc_dimension, non_neg), |x| Some(x)),
-        ))(input)?;
+        match absent(input, version) {
+            Ok((i, _)) => return Ok((i, None)),
+            Err(_) => {}
+        };
 
-        if let Some(s) = num_dims {
-            let mut v = Vec::with_capacity(s as usize);
-            let mut i = i;
-            for _ in 0..s {
-                let id = dim(i, orig)?;
-                i = id.0;
-                v.push(id.1);
-            }
-            Ok((i, Some(v)))
-        } else {
-            Ok((i, None))
+        let (i, s) = preceded(nc_dimension, non_neg)(input)?;
+
+        let mut v = Vec::with_capacity(s as usize);
+        let mut i = i;
+        for _ in 0..s {
+            let id = dim(i)?;
+            i = id.0;
+            v.push(id.1);
         }
+        Ok((i, Some(v)))
     }
 
     #[derive(Clone, Copy, Debug)]
@@ -154,18 +153,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             map(tag(&[0, 0, 0, 0x0b]), |_| Type::U64),
         ))(input)
     }
-    fn att_list<'a>(input: &'a [u8], orig: &'a [u8]) -> IResult<&'a [u8], Option<Vec<Attribute>>> {
+    fn att_list<'a>(
+        input: &'a [u8],
+        version: Version,
+    ) -> IResult<&'a [u8], Option<Vec<Attribute>>> {
         fn nc_attribute(input: &[u8]) -> IResult<&[u8], ()> {
             map(tag(&[0, 0, 0, 0x0c]), |_| ())(input)
         }
-        fn attr<'a>(input: &'a [u8], orig: &'a [u8]) -> IResult<&'a [u8], Attribute> {
-            let (i, name) = name(input, orig)?;
+        fn attr<'a>(input: &'a [u8]) -> IResult<&'a [u8], Attribute> {
+            let (i, name) = name(input)?;
             let (i, typ) = nc_type(i)?;
             let (i, nelems) = non_neg(i)?;
             let (i, values) = map(take(nelems as usize * typ.byte_size()), |x: &[u8]| {
                 x.to_vec()
             })(i)?;
-            let (i, _) = padding(i, orig)?;
+            let (i, _) = padding(i, input)?;
 
             Ok((
                 i,
@@ -176,23 +178,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 },
             ))
         }
-        let (i, atts) = alt((map(absent, |_| false), map(nc_attribute, |_| true)))(input)?;
-        if atts {
-            let (i, nelems) = non_neg(i)?;
-            let mut attributes = Vec::with_capacity(nelems as usize);
-            let mut i = i;
-            for _ in 0..nelems {
-                let id = attr(i, orig)?;
-                i = id.0;
-                attributes.push(id.1);
-            }
-            Ok((i, Some(attributes)))
-        } else {
-            Ok((i, None))
+        match absent(input, version) {
+            Ok((i, _)) => return Ok((i, None)),
+            Err(_) => {}
         }
+
+        let (i, nelems) = preceded(nc_attribute, non_neg)(input)?;
+        let mut attributes = Vec::with_capacity(nelems as usize);
+        let mut i = i;
+        for _ in 0..nelems {
+            let id = attr(i)?;
+            i = id.0;
+            attributes.push(id.1);
+        }
+        Ok((i, Some(attributes)))
     }
-    fn gatt_list<'a>(input: &'a [u8], orig: &'a [u8]) -> IResult<&'a [u8], Option<Vec<Attribute>>> {
-        att_list(input, orig)
+    fn gatt_list<'a>(
+        input: &'a [u8],
+        version: Version,
+    ) -> IResult<&'a [u8], Option<Vec<Attribute>>> {
+        att_list(input, version)
     }
 
     #[derive(Debug, Clone)]
@@ -202,22 +207,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         atts: Option<Vec<Attribute>>,
         typ: Type,
         vsize: u32,
-        begin: u32,
+        begin: u64,
     }
 
-    fn var_list<'a>(input: &'a [u8], orig: &'a [u8]) -> IResult<&'a [u8], Option<Vec<Variable>>> {
+    fn var_list<'a>(input: &'a [u8], version: Version) -> IResult<&'a [u8], Option<Vec<Variable>>> {
         fn nc_variable(input: &[u8]) -> IResult<&[u8], ()> {
             map(tag(&[0, 0, 0, 0x0b]), |_| ())(input)
         }
-        fn offset(input: &[u8]) -> IResult<&[u8], u32> {
-            be_u32(input)
-            // if version == CDF2 | version == CDF5 {
-            //     be_u64(input)
-            // }
+        fn offset(input: &[u8], version: Version) -> IResult<&[u8], u64> {
+            if version == Version::CDF1 {
+                map(be_u32, |x| x as u64)(input)
+            } else {
+                be_u64(input)
+            }
         }
-        fn var<'a>(input: &'a [u8], orig: &'a [u8]) -> IResult<&'a [u8], Variable> {
+        fn var<'a>(input: &'a [u8], version: Version) -> IResult<&'a [u8], Variable> {
             let mut i = input;
-            let id = name(i, orig)?;
+            let id = name(i)?;
             i = id.0;
             let name = id.1;
             let inelems = non_neg(i)?;
@@ -226,7 +232,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let idimids = count(non_neg, nelems as usize)(i)?;
             i = idimids.0;
             let dimids = idimids.1;
-            let iatts = att_list(i, orig)?;
+            let iatts = att_list(i, version)?;
             i = iatts.0;
             let atts = iatts.1;
             let itype = nc_type(i)?;
@@ -235,7 +241,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let ivsize = non_neg(i)?;
             i = ivsize.0;
             let vsize = ivsize.1;
-            let ibegin = offset(i)?;
+            let ibegin = offset(i, version)?;
             i = ibegin.0;
             let begin = ibegin.1;
 
@@ -249,20 +255,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             };
             Ok((i, v))
         }
-        let (i, vars) = alt((map(absent, |_| false), map(nc_variable, |_| true)))(input)?;
-        if vars {
-            let (i, nelems) = non_neg(i)?;
-            let mut variables = Vec::with_capacity(nelems as usize);
-            let mut i = i;
-            for _ in 0..nelems {
-                let iv = var(i, orig)?;
-                i = iv.0;
-                variables.push(iv.1);
-            }
-            Ok((i, Some(variables)))
-        } else {
-            Ok((i, None))
+
+        match absent(input, version) {
+            Err(_) => {}
+            Ok((i, _)) => return Ok((i, None)),
         }
+
+        let (i, _) = nc_variable(input)?;
+
+        let (i, nelems) = non_neg(i)?;
+        let mut variables = Vec::with_capacity(nelems as usize);
+        let mut i = i;
+        for _ in 0..nelems {
+            let iv = var(i, version)?;
+            i = iv.0;
+            variables.push(iv.1);
+        }
+        Ok((i, Some(variables)))
     }
 
     #[derive(Debug, Clone)]
@@ -271,25 +280,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         numrecs: Option<u32>,
         dim_list: Option<Vec<Dimension>>,
         gatt_list: Option<Vec<Attribute>>,
-        var_list: Option<Vec<Variable>>
+        var_list: Option<Vec<Variable>>,
     }
 
     fn header(input: &[u8]) -> IResult<&[u8], FileHeader> {
         let (i, version) = magic(input)?;
         let (i, numrecs) = numrecs(i)?;
-        let (i, dim_list) = dimlist(i, input)?;
-        let (i, gatt_list) = gatt_list(i, input)?;
-        let (i, var_list) = var_list(i, input)?;
+        let (i, dim_list) = dimlist(i, version)?;
+        let (i, gatt_list) = gatt_list(i, version)?;
+        let (i, var_list) = var_list(i, version)?;
 
         let _data = i;
 
-        Ok((i, FileHeader {
-            version,
-            numrecs,
-            dim_list,
-            gatt_list,
-            var_list,
-        }))
+        Ok((
+            i,
+            FileHeader {
+                version,
+                numrecs,
+                dim_list,
+                gatt_list,
+                var_list,
+            },
+        ))
     }
 
     #[derive(Debug, Clone)]
@@ -300,9 +312,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     fn parser(input: &[u8]) -> IResult<&[u8], File> {
         let (i, header) = header(input)?;
         println!("{:?}", header);
-        Ok((i, File {
-            header
-        }))
+        Ok((i, File { header }))
     }
 
     Ok(())
