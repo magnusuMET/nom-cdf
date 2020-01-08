@@ -290,8 +290,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (i, gatt_list) = gatt_list(i, version)?;
         let (i, var_list) = var_list(i, version)?;
 
-        let _data = i;
-
         Ok((
             i,
             FileHeader {
@@ -307,12 +305,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[derive(Debug, Clone)]
     struct File {
         header: FileHeader,
+        data: Data,
+    }
+
+    #[derive(Debug, Clone)]
+    struct Data(Vec<u8>);
+
+    fn data(input: &[u8]) -> IResult<&[u8], Data> {
+        map(take(input.len()), |v: &[u8]| Data(v.to_vec()))(input)
     }
 
     fn parser(input: &[u8]) -> IResult<&[u8], File> {
-        let (i, header) = header(input)?;
-        println!("{:?}", header);
-        Ok((i, File { header }))
+        complete(map(pair(header, data), |(header, data)| File {
+            header,
+            data,
+        }))(input)
     }
 
     Ok(())
