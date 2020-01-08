@@ -20,13 +20,12 @@ fn magic(input: &[u8]) -> IResult<&[u8], Version> {
 }
 fn numrecs(input: &[u8], version: Version) -> IResult<&[u8], Option<u64>> {
     fn streaming(input: &[u8], version: Version) -> IResult<&[u8], ()> {
-        if version == Version::CDF1 {
-            map(tag(&[0xff, 0xff, 0xff, 0xff]), |_| ())(input)
-        } else {
-            map(
+        match version {
+            Version::CDF1 | Version::CDF2 => map(tag(&[0xff, 0xff, 0xff, 0xff]), |_| ())(input),
+            Version::CDF5 => map(
                 tag(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
                 |_| (),
-            )(input)
+            )(input),
         }
     }
     if let Ok((i, _)) = streaming(input, version) {
@@ -38,10 +37,9 @@ fn numrecs(input: &[u8], version: Version) -> IResult<&[u8], Option<u64>> {
 }
 
 fn non_neg(input: &[u8], version: Version) -> IResult<&[u8], u64> {
-    if version == Version::CDF2 || version == Version::CDF5 {
-        be_u64(input)
-    } else {
-        map(be_u32, u64::from)(input)
+    match version {
+        Version::CDF1 | Version::CDF2 => map(be_u32, u64::from)(input),
+        Version::CDF5 => be_u64(input),
     }
 }
 
@@ -52,10 +50,9 @@ fn absent(input: &[u8], version: Version) -> IResult<&[u8], ()> {
     fn zero64(input: &[u8]) -> IResult<&[u8], ()> {
         map(tag(&[0, 0, 0, 0, 0, 0, 0, 0]), |_| ())(input)
     }
-    if version == Version::CDF5 {
-        map(pair(zero, zero64), |_| ())(input)
-    } else {
-        map(pair(zero, zero), |_| ())(input)
+    match version {
+        Version::CDF1 | Version::CDF2 => map(pair(zero, zero), |_| ())(input),
+        Version::CDF5 => map(pair(zero, zero64), |_| ())(input),
     }
 }
 fn name(input: &[u8], version: Version) -> IResult<&[u8], String> {
@@ -169,10 +166,9 @@ fn var_list(input: &[u8], version: Version) -> IResult<&[u8], Option<Vec<Variabl
         map(tag(&[0, 0, 0, 0x0b]), |_| ())(input)
     }
     fn offset(input: &[u8], version: Version) -> IResult<&[u8], u64> {
-        if version == Version::CDF1 {
-            map(be_u32, u64::from)(input)
-        } else {
-            be_u64(input)
+        match version {
+            Version::CDF1 => map(be_u32, u64::from)(input),
+            Version::CDF2 | Version::CDF5 => be_u64(input),
         }
     }
     fn var(input: &[u8], version: Version) -> IResult<&[u8], Variable> {
