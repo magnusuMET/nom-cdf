@@ -158,28 +158,13 @@ fn var_list(input: &[u8], version: Version) -> IResult<&[u8], Option<Vec<Variabl
         }
     }
     fn var(input: &[u8], version: Version) -> IResult<&[u8], Variable> {
-        let mut i = input;
-        let id = name(i)?;
-        i = id.0;
-        let name = id.1;
-        let inelems = non_neg(i)?;
-        i = inelems.0;
-        let nelems = inelems.1;
-        let idimids = count(non_neg, nelems as usize)(i)?;
-        i = idimids.0;
-        let dimids = idimids.1;
-        let iatts = att_list(i, version)?;
-        i = iatts.0;
-        let atts = iatts.1;
-        let itype = nc_type(i)?;
-        i = itype.0;
-        let typ = itype.1;
-        let ivsize = non_neg(i)?;
-        i = ivsize.0;
-        let vsize = ivsize.1;
-        let ibegin = offset(i, version)?;
-        i = ibegin.0;
-        let begin = ibegin.1;
+        let (i, name) = name(input)?;
+        let (i, nelems) = non_neg(i)?;
+        let (i, dimids) = count(non_neg, nelems as usize)(i)?;
+        let (i, atts) = att_list(i, version)?;
+        let (i, typ) = nc_type(i)?;
+        let (i, vsize) = non_neg(i)?;
+        let (i, begin) = offset(i, version)?;
 
         let v = Variable {
             name,
