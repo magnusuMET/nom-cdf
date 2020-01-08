@@ -6,12 +6,7 @@ use nom::number::complete::*;
 use nom::sequence::*;
 use nom::IResult;
 
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub enum Version {
-    CDF1,
-    CDF2,
-    CDF5,
-}
+use super::{Attribute, Dimension, FileHeader, Type, Variable, Version};
 
 fn magic(input: &[u8]) -> IResult<&[u8], Version> {
     fn version(input: &[u8]) -> IResult<&[u8], Version> {
@@ -36,11 +31,6 @@ fn non_neg(input: &[u8]) -> IResult<&[u8], u32> {
     // nom::number::complete::be_u64(input)
 }
 
-#[derive(Clone, Debug)]
-pub struct Dimension {
-    pub name: String,
-    pub len: u32,
-}
 fn absent(input: &[u8], version: Version) -> IResult<&[u8], ()> {
     fn zero(input: &[u8]) -> IResult<&[u8], ()> {
         map(tag(&[0, 0, 0, 0]), |_| ())(input)
@@ -54,19 +44,21 @@ fn absent(input: &[u8], version: Version) -> IResult<&[u8], ()> {
         map(pair(zero, zero), |_| ())(input)
     }
 }
-fn name<'a>(input: &'a [u8]) -> IResult<&'a [u8], String> {
-    let (i, num) = non_neg(input)?;
-    let (i, x) = map(take(num as usize), |s: &[u8]| {
-        String::from(std::str::from_utf8(s).unwrap())
-    })(i)?;
+fn name(input: &[u8]) -> IResult<&[u8], String> {
+    let (i, s) = length_value(
+        non_neg,
+        map(map_res(rest, |s| std::str::from_utf8(s)), |s| {
+            String::from(s)
+        }),
+    )(input)?;
     let (i, _) = padding(i, input)?;
-    Ok((i, x))
+    Ok((i, s))
 }
-fn dimlist<'a>(input: &'a [u8], version: Version) -> IResult<&'a [u8], Option<Vec<Dimension>>> {
+fn dimlist(input: &[u8], version: Version) -> IResult<&[u8], Option<Vec<Dimension>>> {
     fn nc_dimension(input: &[u8]) -> IResult<&[u8], ()> {
         map(tag(&[0, 0, 0, 0x0a]), |_| ())(input)
     }
-    fn dim<'a>(input: &'a [u8]) -> IResult<&'a [u8], Dimension> {
+    fn dim(input: &[u8]) -> IResult<&[u8], Dimension> {
         let (i, name) = name(input)?;
         let (i, len) = non_neg(i)?;
 
@@ -88,37 +80,6 @@ fn dimlist<'a>(input: &'a [u8], version: Version) -> IResult<&'a [u8], Option<Ve
         v.push(id.1);
     }
     Ok((i, Some(v)))
-}
-
-#[derive(Clone, Copy, Debug)]
-pub enum Type {
-    I8,
-    U8,
-    Char,
-    I16,
-    U16,
-    I32,
-    U32,
-    I64,
-    U64,
-    F32,
-    F64,
-}
-impl Type {
-    fn byte_size(&self) -> usize {
-        match self {
-            Self::I8 | Self::U8 | Self::Char => 1,
-            Self::I16 | Self::U16 => 2,
-            Self::I32 | Self::U32 | Self::F32 => 4,
-            Self::I64 | Self::U64 | Self::F64 => 8,
-        }
-    }
-}
-#[derive(Clone, Debug)]
-pub struct Attribute {
-    pub name: String,
-    pub typ: Type,
-    pub data: Vec<u8>,
 }
 fn padding<'a>(input: &'a [u8], orig: &'a [u8]) -> IResult<&'a [u8], ()> {
     use nom::Offset;
@@ -148,11 +109,11 @@ fn nc_type(input: &[u8]) -> IResult<&[u8], Type> {
         map(tag(&[0, 0, 0, 0x0b]), |_| Type::U64),
     ))(input)
 }
-fn att_list<'a>(input: &'a [u8], version: Version) -> IResult<&'a [u8], Option<Vec<Attribute>>> {
+fn att_list(input: &[u8], version: Version) -> IResult<&[u8], Option<Vec<Attribute>>> {
     fn nc_attribute(input: &[u8]) -> IResult<&[u8], ()> {
         map(tag(&[0, 0, 0, 0x0c]), |_| ())(input)
     }
-    fn attr<'a>(input: &'a [u8]) -> IResult<&'a [u8], Attribute> {
+    fn attr(input: &[u8]) -> IResult<&[u8], Attribute> {
         let (i, name) = name(input)?;
         let (i, typ) = nc_type(i)?;
         let (i, nelems) = non_neg(i)?;
@@ -185,21 +146,11 @@ fn att_list<'a>(input: &'a [u8], version: Version) -> IResult<&'a [u8], Option<V
     }
     Ok((i, Some(attributes)))
 }
-fn gatt_list<'a>(input: &'a [u8], version: Version) -> IResult<&'a [u8], Option<Vec<Attribute>>> {
+fn gatt_list(input: &[u8], version: Version) -> IResult<&[u8], Option<Vec<Attribute>>> {
     att_list(input, version)
 }
 
-#[derive(Debug, Clone)]
-pub struct Variable {
-    pub name: String,
-    pub dimids: Vec<u32>,
-    pub atts: Option<Vec<Attribute>>,
-    pub typ: Type,
-    pub vsize: u32,
-    pub begin: u64,
-}
-
-fn var_list<'a>(input: &'a [u8], version: Version) -> IResult<&'a [u8], Option<Vec<Variable>>> {
+fn var_list(input: &[u8], version: Version) -> IResult<&[u8], Option<Vec<Variable>>> {
     fn nc_variable(input: &[u8]) -> IResult<&[u8], ()> {
         map(tag(&[0, 0, 0, 0x0b]), |_| ())(input)
     }
@@ -210,7 +161,7 @@ fn var_list<'a>(input: &'a [u8], version: Version) -> IResult<&'a [u8], Option<V
             be_u64(input)
         }
     }
-    fn var<'a>(input: &'a [u8], version: Version) -> IResult<&'a [u8], Variable> {
+    fn var(input: &[u8], version: Version) -> IResult<&[u8], Variable> {
         let mut i = input;
         let id = name(i)?;
         i = id.0;
@@ -263,15 +214,6 @@ fn var_list<'a>(input: &'a [u8], version: Version) -> IResult<&'a [u8], Option<V
     Ok((i, Some(variables)))
 }
 
-#[derive(Debug, Clone)]
-pub struct FileHeader {
-    pub version: Version,
-    pub numrecs: Option<u32>,
-    pub dim_list: Option<Vec<Dimension>>,
-    pub gatt_list: Option<Vec<Attribute>>,
-    pub var_list: Option<Vec<Variable>>,
-}
-
 fn header(input: &[u8]) -> IResult<&[u8], FileHeader> {
     let (i, version) = magic(input)?;
     let (i, numrecs) = numrecs(i)?;
@@ -291,22 +233,6 @@ fn header(input: &[u8]) -> IResult<&[u8], FileHeader> {
     ))
 }
 
-#[derive(Debug, Clone)]
-pub struct File {
-    pub header: FileHeader,
-    pub data: Data,
-}
-
-#[derive(Debug, Clone)]
-pub struct Data(pub Vec<u8>);
-
-fn data(input: &[u8]) -> IResult<&[u8], Data> {
-    map(take(input.len()), |v: &[u8]| Data(v.to_vec()))(input)
-}
-
-pub fn cdf_parser(input: &[u8]) -> IResult<&[u8], File> {
-    complete(map(pair(header, data), |(header, data)| File {
-        header,
-        data,
-    }))(input)
+pub fn cdf_parser(input: &[u8]) -> IResult<&[u8], FileHeader> {
+    header(input)
 }
