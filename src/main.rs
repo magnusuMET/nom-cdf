@@ -67,7 +67,7 @@ pub enum Type {
     F64,
 }
 impl Type {
-    pub fn byte_size(&self) -> usize {
+    pub fn byte_size(self) -> usize {
         match self {
             Self::I8 | Self::U8 | Self::Char => 1,
             Self::I16 | Self::U16 => 2,

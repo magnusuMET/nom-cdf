@@ -23,7 +23,7 @@ fn numrecs(input: &[u8]) -> IResult<&[u8], Option<u32>> {
     fn streaming(input: &[u8]) -> IResult<&[u8], ()> {
         map(tag(&[0xff, 0xff, 0xff, 0xff]), |_| ())(input)
     }
-    alt((map(streaming, |_| None), map(non_neg, |x| Some(x))))(input)
+    alt((map(streaming, |_| None), map(non_neg, Some)))(input)
 }
 
 fn non_neg(input: &[u8]) -> IResult<&[u8], u32> {
@@ -47,9 +47,7 @@ fn absent(input: &[u8], version: Version) -> IResult<&[u8], ()> {
 fn name(input: &[u8]) -> IResult<&[u8], String> {
     let (i, s) = length_value(
         non_neg,
-        map(map_res(rest, |s| std::str::from_utf8(s)), |s| {
-            String::from(s)
-        }),
+        map(map_res(rest, std::str::from_utf8), |s| String::from(s)),
     )(input)?;
     let (i, _) = padding(i, input)?;
     Ok((i, s))
@@ -65,10 +63,9 @@ fn dimlist(input: &[u8], version: Version) -> IResult<&[u8], Option<Vec<Dimensio
         Ok((i, Dimension { name, len }))
     }
 
-    match absent(input, version) {
-        Ok((i, _)) => return Ok((i, None)),
-        Err(_) => {}
-    };
+    if let Ok((i, _)) = absent(input, version) {
+        return Ok((i, None));
+    }
 
     let (i, s) = preceded(nc_dimension, non_neg)(input)?;
 
@@ -131,9 +128,8 @@ fn att_list(input: &[u8], version: Version) -> IResult<&[u8], Option<Vec<Attribu
             },
         ))
     }
-    match absent(input, version) {
-        Ok((i, _)) => return Ok((i, None)),
-        Err(_) => {}
+    if let Ok((i, _)) = absent(input, version) {
+        return Ok((i, None));
     }
 
     let (i, nelems) = preceded(nc_attribute, non_neg)(input)?;
@@ -156,7 +152,7 @@ fn var_list(input: &[u8], version: Version) -> IResult<&[u8], Option<Vec<Variabl
     }
     fn offset(input: &[u8], version: Version) -> IResult<&[u8], u64> {
         if version == Version::CDF1 {
-            map(be_u32, |x| x as u64)(input)
+            map(be_u32, |x| u64::from(x))(input)
         } else {
             be_u64(input)
         }
