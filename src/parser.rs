@@ -1,7 +1,6 @@
 use nom::branch::*;
 use nom::bytes::complete::*;
 use nom::combinator::*;
-use nom::multi::*;
 use nom::number::complete::*;
 use nom::sequence::*;
 use nom::IResult;
@@ -19,16 +18,31 @@ fn magic(input: &[u8]) -> IResult<&[u8], Version> {
 
     preceded(tag("CDF"), version)(input)
 }
-fn numrecs(input: &[u8]) -> IResult<&[u8], Option<u32>> {
-    fn streaming(input: &[u8]) -> IResult<&[u8], ()> {
-        map(tag(&[0xff, 0xff, 0xff, 0xff]), |_| ())(input)
+fn numrecs(input: &[u8], version: Version) -> IResult<&[u8], Option<u64>> {
+    fn streaming(input: &[u8], version: Version) -> IResult<&[u8], ()> {
+        if version == Version::CDF1 {
+            map(tag(&[0xff, 0xff, 0xff, 0xff]), |_| ())(input)
+        } else {
+            map(
+                tag(&[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]),
+                |_| (),
+            )(input)
+        }
     }
-    alt((map(streaming, |_| None), map(non_neg, Some)))(input)
+    if let Ok((i, _)) = streaming(input, version) {
+        Ok((i, None))
+    } else {
+        let (i, s) = non_neg(input, version)?;
+        Ok((i, Some(s)))
+    }
 }
 
-fn non_neg(input: &[u8]) -> IResult<&[u8], u32> {
-    be_u32(input)
-    // nom::number::complete::be_u64(input)
+fn non_neg(input: &[u8], version: Version) -> IResult<&[u8], u64> {
+    if version == Version::CDF2 || version == Version::CDF5 {
+        be_u64(input)
+    } else {
+        map(be_u32, u64::from)(input)
+    }
 }
 
 fn absent(input: &[u8], version: Version) -> IResult<&[u8], ()> {
@@ -44,11 +58,12 @@ fn absent(input: &[u8], version: Version) -> IResult<&[u8], ()> {
         map(pair(zero, zero), |_| ())(input)
     }
 }
-fn name(input: &[u8]) -> IResult<&[u8], String> {
-    let (i, s) = length_value(
-        non_neg,
-        map(map_res(rest, std::str::from_utf8), |s| String::from(s)),
-    )(input)?;
+fn name(input: &[u8], version: Version) -> IResult<&[u8], String> {
+    let (i, nlen) = non_neg(input, version)?;
+    let (i, s) = map(
+        map_res(take(nlen as usize), std::str::from_utf8),
+        String::from,
+    )(i)?;
     let (i, _) = padding(i, input)?;
     Ok((i, s))
 }
@@ -56,9 +71,9 @@ fn dimlist(input: &[u8], version: Version) -> IResult<&[u8], Option<Vec<Dimensio
     fn nc_dimension(input: &[u8]) -> IResult<&[u8], ()> {
         map(tag(&[0, 0, 0, 0x0a]), |_| ())(input)
     }
-    fn dim(input: &[u8]) -> IResult<&[u8], Dimension> {
-        let (i, name) = name(input)?;
-        let (i, len) = non_neg(i)?;
+    fn dim(input: &[u8], version: Version) -> IResult<&[u8], Dimension> {
+        let (i, name) = name(input, version)?;
+        let (i, len) = non_neg(i, version)?;
 
         Ok((i, Dimension { name, len }))
     }
@@ -67,12 +82,14 @@ fn dimlist(input: &[u8], version: Version) -> IResult<&[u8], Option<Vec<Dimensio
         return Ok((i, None));
     }
 
-    let (i, s) = preceded(nc_dimension, non_neg)(input)?;
+    let (i, _) = nc_dimension(input)?;
+
+    let (i, s) = non_neg(i, version)?;
 
     let mut v = Vec::with_capacity(s as usize);
     let mut i = i;
     for _ in 0..s {
-        let id = dim(i)?;
+        let id = dim(i, version)?;
         i = id.0;
         v.push(id.1);
     }
@@ -110,10 +127,10 @@ fn att_list(input: &[u8], version: Version) -> IResult<&[u8], Option<Vec<Attribu
     fn nc_attribute(input: &[u8]) -> IResult<&[u8], ()> {
         map(tag(&[0, 0, 0, 0x0c]), |_| ())(input)
     }
-    fn attr(input: &[u8]) -> IResult<&[u8], Attribute> {
-        let (i, name) = name(input)?;
+    fn attr(input: &[u8], version: Version) -> IResult<&[u8], Attribute> {
+        let (i, name) = name(input, version)?;
         let (i, typ) = nc_type(i)?;
-        let (i, nelems) = non_neg(i)?;
+        let (i, nelems) = non_neg(i, version)?;
         let (i, values) = map(take(nelems as usize * typ.byte_size()), |x: &[u8]| {
             x.to_vec()
         })(i)?;
@@ -131,12 +148,13 @@ fn att_list(input: &[u8], version: Version) -> IResult<&[u8], Option<Vec<Attribu
     if let Ok((i, _)) = absent(input, version) {
         return Ok((i, None));
     }
+    let (i, _) = nc_attribute(input)?;
 
-    let (i, nelems) = preceded(nc_attribute, non_neg)(input)?;
+    let (i, nelems) = non_neg(i, version)?;
     let mut attributes = Vec::with_capacity(nelems as usize);
     let mut i = i;
     for _ in 0..nelems {
-        let id = attr(i)?;
+        let id = attr(i, version)?;
         i = id.0;
         attributes.push(id.1);
     }
@@ -152,18 +170,27 @@ fn var_list(input: &[u8], version: Version) -> IResult<&[u8], Option<Vec<Variabl
     }
     fn offset(input: &[u8], version: Version) -> IResult<&[u8], u64> {
         if version == Version::CDF1 {
-            map(be_u32, |x| u64::from(x))(input)
+            map(be_u32, u64::from)(input)
         } else {
             be_u64(input)
         }
     }
     fn var(input: &[u8], version: Version) -> IResult<&[u8], Variable> {
-        let (i, name) = name(input)?;
-        let (i, nelems) = non_neg(i)?;
-        let (i, dimids) = count(non_neg, nelems as usize)(i)?;
+        let (i, name) = name(input, version)?;
+        let (i, dimids) = {
+            let (i, nelems) = non_neg(i, version)?;
+            let mut dimids = Vec::with_capacity(nelems as usize);
+            let mut i = i;
+            for _ in 0..nelems {
+                let id = non_neg(i, version)?;
+                i = id.0;
+                dimids.push(id.1);
+            }
+            (i, dimids)
+        };
         let (i, atts) = att_list(i, version)?;
         let (i, typ) = nc_type(i)?;
-        let (i, vsize) = non_neg(i)?;
+        let (i, vsize) = non_neg(i, version)?;
         let (i, begin) = offset(i, version)?;
 
         let v = Variable {
@@ -177,14 +204,12 @@ fn var_list(input: &[u8], version: Version) -> IResult<&[u8], Option<Vec<Variabl
         Ok((i, v))
     }
 
-    match absent(input, version) {
-        Err(_) => {}
-        Ok((i, _)) => return Ok((i, None)),
+    if let Ok((i, _)) = absent(input, version) {
+        return Ok((i, None));
     }
-
     let (i, _) = nc_variable(input)?;
 
-    let (i, nelems) = non_neg(i)?;
+    let (i, nelems) = non_neg(i, version)?;
     let mut variables = Vec::with_capacity(nelems as usize);
     let mut i = i;
     for _ in 0..nelems {
@@ -197,7 +222,7 @@ fn var_list(input: &[u8], version: Version) -> IResult<&[u8], Option<Vec<Variabl
 
 fn header(input: &[u8]) -> IResult<&[u8], FileHeader> {
     let (i, version) = magic(input)?;
-    let (i, numrecs) = numrecs(i)?;
+    let (i, numrecs) = numrecs(i, version)?;
     let (i, dim_list) = dimlist(i, version)?;
     let (i, gatt_list) = gatt_list(i, version)?;
     let (i, var_list) = var_list(i, version)?;

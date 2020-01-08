@@ -80,7 +80,7 @@ impl Type {
 #[derive(Clone, Debug)]
 pub struct Dimension {
     pub name: String,
-    pub len: u32,
+    pub len: u64,
 }
 #[derive(Clone, Debug)]
 pub struct Attribute {
@@ -91,16 +91,16 @@ pub struct Attribute {
 #[derive(Debug, Clone)]
 pub struct Variable {
     pub name: String,
-    pub dimids: Vec<u32>,
+    pub dimids: Vec<u64>,
     pub atts: Option<Vec<Attribute>>,
     pub typ: Type,
-    pub vsize: u32,
+    pub vsize: u64,
     pub begin: u64,
 }
 #[derive(Debug, Clone)]
 pub struct FileHeader {
     pub version: Version,
-    pub numrecs: Option<u32>,
+    pub numrecs: Option<u64>,
     pub dim_list: Option<Vec<Dimension>>,
     pub gatt_list: Option<Vec<Attribute>>,
     pub var_list: Option<Vec<Variable>>,
