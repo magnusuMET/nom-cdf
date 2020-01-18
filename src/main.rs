@@ -33,20 +33,20 @@ fn main() -> Result<()> {
     for (id, dim) in file
         .header
         .dim_list
-        .unwrap_or_else(|| Vec::new())
+        .unwrap_or_else(Vec::new)
         .iter()
         .enumerate()
     {
         println!("\t{}: len({}) id: {}", dim.name, dim.len, id);
     }
     println!("Attribute list:");
-    for att in file.header.gatt_list.unwrap_or_else(|| Vec::new()) {
+    for att in file.header.gatt_list.unwrap_or_else(Vec::new) {
         println!("\t{} typ: {:?}", att.name, att.typ);
     }
     println!("Variable list:");
-    for var in file.header.var_list.unwrap_or_else(|| Vec::new()) {
+    for var in file.header.var_list.unwrap_or_else(Vec::new) {
         println!("\t{} typ({:?}) dimids({:?})", var.name, var.typ, var.dimids);
-        for att in var.atts.unwrap_or_else(|| Vec::new()) {
+        for att in var.atts.unwrap_or_else(Vec::new) {
             println!("\t\t{} typ: {:?}", att.name, att.typ);
         }
     }
