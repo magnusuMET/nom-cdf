@@ -1,46 +1,55 @@
 mod parser;
+use anyhow::{anyhow, Result};
 use parser::*;
+use std::io::Read;
+use std::path::PathBuf;
+use structopt::StructOpt;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let contents: &[u8] = include_bytes!("../coads_climatology.nc");
+#[derive(Debug, StructOpt)]
+#[structopt(name = "parseCDF", about = "Parse CDF-1,2,5 files")]
+struct Options {
+    #[structopt(parse(from_os_str))]
+    filename: PathBuf,
+}
 
-    let header = cdf_parser(contents)?.1;
+fn main() -> Result<()> {
+    let opt = Options::from_args();
+    let mut contents = vec![];
+    {
+        let mut file = std::fs::File::open(&opt.filename)?;
+        file.read_to_end(&mut contents)?;
+    }
+
+    let header = cdf_parser(&contents)
+        .map_err(|_| anyhow!("Could not parse file, is this a valid CDF-1, 2, or 5 file?"))?
+        .1;
     let file = File {
         header,
         data: contents.to_vec(),
     };
-    println!("{:?}", file.header);
-
-    let coads = file
+    println!("Version = {:?}", file.header.version);
+    println!("Number of records: {}", file.header.numrecs.unwrap_or(0));
+    println!("Dimension list:");
+    for (id, dim) in file
         .header
-        .var_list
-        .as_ref()
-        .unwrap()
+        .dim_list
+        .unwrap_or_else(|| Vec::new())
         .iter()
-        .find(|&var| var.name == "COADSX")
-        .unwrap();
-
-    println!("{:?}", coads);
-    let coads_ptr = coads.begin;
-    let typ = coads.typ;
-    assert_eq!(typ, Type::F64);
-
-    let dims = &coads.dimids;
-    let len = dims
-        .iter()
-        .map(|&i| file.header.dim_list.as_ref().unwrap()[i as usize].len as usize)
-        .product::<usize>();
-
-    let data: Vec<f64> = file.data[coads_ptr as usize..]
-        .chunks_exact(typ.byte_size())
-        .take(len)
-        .map(|x| {
-            let mut y = [0; 8];
-            y.copy_from_slice(&x[..8]);
-            f64::from_be_bytes(y)
-        })
-        .collect::<Vec<f64>>();
-    println!("{:?}", data);
+        .enumerate()
+    {
+        println!("\t{}: len({}) id: {}", dim.name, dim.len, id);
+    }
+    println!("Attribute list:");
+    for att in file.header.gatt_list.unwrap_or_else(|| Vec::new()) {
+        println!("\t{} typ: {:?}", att.name, att.typ);
+    }
+    println!("Variable list:");
+    for var in file.header.var_list.unwrap_or_else(|| Vec::new()) {
+        println!("\t{} typ({:?}) dimids({:?})", var.name, var.typ, var.dimids);
+        for att in var.atts.unwrap_or_else(|| Vec::new()) {
+            println!("\t\t{} typ: {:?}", att.name, att.typ);
+        }
+    }
 
     Ok(())
 }
